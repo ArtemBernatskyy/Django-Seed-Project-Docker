@@ -1,0 +1,74 @@
+version: '2.1'
+
+volumes:
+  postgres_data: {}
+  static-files: {}
+  media-files: {}
+
+services:
+  postgres:
+    restart: always
+    image: postgres:latest
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file: compose/.env
+    healthcheck:
+      test: "pg_isready -h localhost -p 5432 -q -U postgres"
+      interval: 3s
+      timeout: 5s
+      retries: 5
+
+  django:
+    restart: always
+    build:
+      context: .
+      dockerfile: ./compose/django/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    links:
+      - redis
+      - postgres
+    volumes:
+      - ./:/app/code
+      - static-files:/app/www/static
+      - media-files:/app/www/media
+    command: /app/config/gunicorn.sh
+
+  nginx:
+    restart: always
+    image: nginx:latest
+    ports:
+      - "80:80"
+    depends_on:
+      django:
+        condition: service_started
+    volumes:
+      - ./compose/nginx:/etc/nginx/conf.d
+    volumes_from:
+      - django
+
+  redis:
+    restart: always
+    image: redis:latest
+    healthcheck:
+      test: "redis-cli ping"
+      interval: 3s
+      timeout: 5s
+      retries: 5
+
+  celery:
+    restart: always
+    build:
+      context: .
+      dockerfile: ./compose/django/Dockerfile
+    links:
+      - postgres
+      - redis
+    volumes_from:
+      - django
+    command: celery --purge -n celery_worker --app=testproj.celery:app worker --loglevel=INFO
